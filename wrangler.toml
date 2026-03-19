@@ -8,3 +8,6 @@ APP_ID = "3119711"
 
 # Secrets (set via: npx wrangler secret put APP_PRIVATE_KEY)
 # APP_PRIVATE_KEY — RSA private key in PEM format from your GitHub App
+
+[observability]
+enabled = true

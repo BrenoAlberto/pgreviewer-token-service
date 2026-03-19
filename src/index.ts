@@ -90,10 +90,42 @@ async function verifyGitHubOIDCToken(token: string): Promise<OIDCClaims> {
 function pemToDer(pem: string): Uint8Array {
   const lines = pem
     .split("\n")
-    .filter((l) => !l.startsWith("-----"));
+    .filter((l) => l.trim() && !l.startsWith("-----"));
   const b64 = lines.join("");
   const binary = atob(b64);
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+/**
+ * GitHub App private keys are PKCS#1 (BEGIN RSA PRIVATE KEY).
+ * crypto.subtle.importKey only accepts PKCS#8 (BEGIN PRIVATE KEY).
+ * Wrap the PKCS#1 DER in a PKCS#8 PrivateKeyInfo envelope.
+ */
+function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array {
+  function encodeLen(n: number): Uint8Array {
+    if (n < 128) return new Uint8Array([n]);
+    if (n < 256) return new Uint8Array([0x81, n]);
+    return new Uint8Array([0x82, (n >> 8) & 0xff, n & 0xff]);
+  }
+
+  // AlgorithmIdentifier: SEQUENCE { OID rsaEncryption, NULL }
+  const algId = new Uint8Array([
+    0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    0x05, 0x00,
+  ]);
+
+  // OCTET STRING wrapping the PKCS#1 key
+  const octetLen = encodeLen(pkcs1.length);
+  const octetString = new Uint8Array([0x04, ...octetLen, ...pkcs1]);
+
+  // Version INTEGER 0
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+
+  // PrivateKeyInfo SEQUENCE
+  const inner = new Uint8Array([...version, ...algId, ...octetString]);
+  const outerLen = encodeLen(inner.length);
+  return new Uint8Array([0x30, ...outerLen, ...inner]);
 }
 
 function base64UrlEncode(data: Uint8Array): string {
@@ -112,9 +144,12 @@ async function generateAppJWT(appId: string, privateKeyPem: string): Promise<str
     new TextEncoder().encode(JSON.stringify({ iat: now - 60, exp: now + 540, iss: appId })),
   );
 
+  const isPkcs1 = privateKeyPem.includes("BEGIN RSA PRIVATE KEY");
+  const der = isPkcs1 ? pkcs1ToPkcs8(pemToDer(privateKeyPem)) : pemToDer(privateKeyPem);
+
   const key = await crypto.subtle.importKey(
     "pkcs8",
-    pemToDer(privateKeyPem),
+    der,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"],
