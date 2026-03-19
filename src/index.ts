@@ -88,10 +88,8 @@ async function verifyGitHubOIDCToken(token: string): Promise<OIDCClaims> {
 // ── GitHub App JWT ────────────────────────────────────────────────────────────
 
 function pemToDer(pem: string): Uint8Array {
-  const lines = pem
-    .split("\n")
-    .filter((l) => l.trim() && !l.startsWith("-----"));
-  const b64 = lines.join("");
+  // Strip headers/footers and ALL whitespace (handles \r\n and \n)
+  const b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
   const binary = atob(b64);
   return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
@@ -99,33 +97,27 @@ function pemToDer(pem: string): Uint8Array {
 /**
  * GitHub App private keys are PKCS#1 (BEGIN RSA PRIVATE KEY).
  * crypto.subtle.importKey only accepts PKCS#8 (BEGIN PRIVATE KEY).
- * Wrap the PKCS#1 DER in a PKCS#8 PrivateKeyInfo envelope.
+ *
+ * PKCS#8 PrivateKeyInfo = fixed 26-byte header + PKCS#1 DER:
+ *   SEQUENCE { INTEGER 0, SEQUENCE { OID rsaEncryption, NULL }, OCTET STRING { <pkcs1> } }
+ * The only variable parts are the two 2-byte lengths, derived from pkcs1.length.
  */
 function pkcs1ToPkcs8(pkcs1: Uint8Array): Uint8Array {
-  function encodeLen(n: number): Uint8Array {
-    if (n < 128) return new Uint8Array([n]);
-    if (n < 256) return new Uint8Array([0x81, n]);
-    return new Uint8Array([0x82, (n >> 8) & 0xff, n & 0xff]);
-  }
-
-  // AlgorithmIdentifier: SEQUENCE { OID rsaEncryption, NULL }
-  const algId = new Uint8Array([
-    0x30, 0x0d,
-    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
-    0x05, 0x00,
+  const L = pkcs1.length;
+  // Inner length = 3 (version) + 15 (algId) + 4 (octet string header) + L
+  const inner = 22 + L;
+  const header = new Uint8Array([
+    0x30, 0x82, (inner >> 8) & 0xff, inner & 0xff, // SEQUENCE
+    0x02, 0x01, 0x00,                               // INTEGER 0 (version)
+    0x30, 0x0d,                                     // SEQUENCE (algId, 13 bytes)
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, // OID rsaEncryption
+    0x05, 0x00,                                     // NULL
+    0x04, 0x82, (L >> 8) & 0xff, L & 0xff,         // OCTET STRING
   ]);
-
-  // OCTET STRING wrapping the PKCS#1 key
-  const octetLen = encodeLen(pkcs1.length);
-  const octetString = new Uint8Array([0x04, ...octetLen, ...pkcs1]);
-
-  // Version INTEGER 0
-  const version = new Uint8Array([0x02, 0x01, 0x00]);
-
-  // PrivateKeyInfo SEQUENCE
-  const inner = new Uint8Array([...version, ...algId, ...octetString]);
-  const outerLen = encodeLen(inner.length);
-  return new Uint8Array([0x30, ...outerLen, ...inner]);
+  const result = new Uint8Array(header.length + L);
+  result.set(header);
+  result.set(pkcs1, header.length);
+  return result;
 }
 
 function base64UrlEncode(data: Uint8Array): string {
