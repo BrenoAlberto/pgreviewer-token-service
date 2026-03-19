@@ -1,0 +1,10 @@
+name = "pgreviewer-token-service"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_ID = ""  # Set to your GitHub App ID after creating the App
+
+# Secrets (set via: npx wrangler secret put APP_PRIVATE_KEY)
+# APP_PRIVATE_KEY — RSA private key in PEM format from your GitHub App
